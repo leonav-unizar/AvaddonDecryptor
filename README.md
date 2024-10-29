@@ -24,10 +24,10 @@ The instructions will be similar to the original.
 }
 ```
    
-2) If you have extracted multiple keys from Avaddon process, drop a file to the filesystem so Avaddon encrypts it. Keep the original file, 
-so the script can check whether the key is valid or not (if decrypting it results
-in the original file). Remember to pause the Avaddon process so it does not encrypt 
-any further.
+2) If you have extracted multiple keys from the Avaddon process, drop a file to the 
+filesystem so Avaddon encrypts it. Keep the original file, so the script can check
+whether the key is valid or not (if decrypting it results in the original file). 
+Remember to pause the Avaddon process so it does not encrypt any further.
 
 3) In case you extracted a single valid key, you can run the command as follows (no need for admin):
 
@@ -38,8 +38,8 @@ The script will also check whether the keys inputted are AES or not, and will
 discard those which are not. In case there are multiple AES keys, the script will need 
 an encrypted file and its unencrypted copy (specified via the arguments). In case 
 a key outputs the original file when decrypting, that key will be considered the 
-correct one.  
-   
+correct one.
+
 Please, check all available arguments with the `-h` option.
 
 Note that decryption of the given folder is done recursively. So, to decrypt the whole system, the <folder_to_decrypt> value should be 'C:\\'
