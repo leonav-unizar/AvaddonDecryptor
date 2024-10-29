@@ -1,42 +1,54 @@
 # AvaddonDecryptor
 
-This is an open-sourced tool to decrypt systems infected with Avaddon ransomware. 
-In order to do so, the computer should not have been powered off after the infection.
+This is a modification to the open-sourced tool created by Javier Yuste for decrypting 
+files infected with Avaddon ransomware. 
+The original method depended on different tools such as Sysinternals procdump, but 
+we rely on another tool for the memory extraction. This version of the project
+removes such dependencies, and works only with the strictly necessary.
 
 ## Instructions
 
-1) Download the Sysinternals Suite to the infected system. 
-   Executable files are not encrypted by Avaddon.
-   In particular, you will need two tools from the Suite: Process Explorer and ProcDump.
-   
-2) Open Process Explorer as administrator and locate the Avaddon process.
-**Suspend** (do not kill it!) the process and note the PID of the process.
-   
-3) Open a cmd as administrator and dump the memory of the process.
-To do so, you can run 'procdump.exe -ma \<PID\>', where \<PID\> is the PID of the ransomware process we saw in the second step.
-   
-4) In addition to the memory dump, you will need an encrypted file and the original version of such encrypted file. 
-   If you do not have any, you may drop a copy of a dummy text file to the infected system prior to suspending the process (or drop the file, resume the process, wait until the file is encrypted and suspend the process again).
-   I usually leave the memory dump, the encrypted file and its original version in the 'dump_and_original_file' folder.
-   
-5) Open a cmd as administrator (important, since the process will need administrator rights to decrypt some folders) and run the decryptor as follows:
+The instructions will be similar to the original.
 
-    `python3 main.py -f <encrypted_file> -o <original_file> -d <memory_dump> --folder <folder_to_decrypt>`
+1) Generate a JSON file with the keys. The structure should be as follows:
+```json
+{
+   "key1": {
+      "algorithm": "AES",
+      "size": 16
+   },
+   "key2": {
+      "algorithm": "RSA",
+      "size": 286
+   }
+}
+```
+   
+2) If you have extracted multiple keys from Avaddon process, drop a file to the filesystem so Avaddon encrypts it. Keep the original file, 
+so the script can check whether the key is valid or not (if decrypting it results
+in the original file). Remember to pause the Avaddon process so it does not encrypt 
+any further.
+
+3) In case you extracted a single valid key, you can run the command as follows (no need for admin):
+
+    `python3 main.py -k <keys_json> --folder <folder_to_decrypt>`
+
+   
+The script will also check whether the keys inputted are AES or not, and will
+discard those which are not. In case there are multiple AES keys, the script will need 
+an encrypted file and its unencrypted copy (specified via the arguments). In case 
+a key outputs the original file when decrypting, that key will be considered the 
+correct one.  
+   
+Please, check all available arguments with the `-h` option.
 
 Note that decryption of the given folder is done recursively. So, to decrypt the whole system, the <folder_to_decrypt> value should be 'C:\\'
 
-# Strings decryption
-
-./utils/decrypt_strings.py contains a Python script to decrypt and label obfuscated strings of Avaddon in Binary Ninja. 
-Note that it was developed for the first versions of Avaddon. Later versions use different XOR keys, although the overall process remains similar.
-
 # Credits
 
-searchbin.py is a slightly modified version of https://github.com/Sepero/SearchBin. I have only added a json class to output the results.
+Javier Yuste for providing the method of decryption of the Avaddon encrypted files.
 
-# Citing
-
-Details of this work can be found in the [full article](https://www.sciencedirect.com/science/article/pii/S0167404821002121). Please cite as:
+Details of his work can be found in the [full article](https://www.sciencedirect.com/science/article/pii/S0167404821002121). Please cite as:
 
 ```
 @article{Yuste2021Avaddon,

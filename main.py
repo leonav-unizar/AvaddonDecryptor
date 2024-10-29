@@ -12,38 +12,7 @@ import time
 logging.basicConfig(format='%(asctime)s [%(levelname)s]: %(message)s', datefmt='%m/%d %I:%M:%S', level=logging.INFO)
 import sys
 
-path = os.path.abspath('minidump')
-if path not in sys.path:
-    sys.path.append(path)
-from minidump.minidumpfile import *
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Dump the process with procdump.exe -ma <PID>
-# Pattern to search for (part of the key_data_s structure, in particular alg_id, flags and key_size):
-# 106600000100000020000000
-
-description = """
-	Decrypts Avaddon encrypted files in a specific folder. 
-	The decryption is done recursively, which means that it may decrypt the whole system if the root path is C:\\.
-	To do this, three files are needed: 
-	    1) a dump of the Avaddon process;
-	    2) an encrypted file;
-	    3) the original version of the encrypted file.
-	The encrypted file is decrypted with all the valid session keys found in the Avaddon memory dump. 
-	If decrypting the encrypted file with one of such keys results in a file that is identical to the original one, 
-	it means that we have recovered the session key. 
-	If that is the case, we proceed to decrypt all the encrypted files in the specified folder.
-	IMPORTANT: BACKUP YOUR SYSTEM BEFORE LAUNCHING THE DECRYPTOR. 
-	THIS TOOL IS PROVIDED AS A PROOF OF CONCEPT, WITHOUT ANY WARRANTY.
-	"""
-
-p = argparse.ArgumentParser(description=description)
-p.add_argument('-f', '--file', type=str, metavar='FILE', dest='file', help='Encrypted file')
-p.add_argument('-o', '--original', type=str, metavar='FILE', dest='original', help='Original version of the encrypted file file')
-p.add_argument('-d', '--dump', type=str, metavar='FILE', dest='dump', help='Memory dump of the Avaddon process')
-p.add_argument('--folder', type=str, dest='folder', help='Folder to decrypt recursively', default="C:/")
-
 
 def get_signature_data(file):
     with open(file, "r+b") as f:
@@ -76,45 +45,6 @@ def remove_signature(file):
     return file
 
 
-def get_keys_from_offsets(dump, offsets):
-    possible_keys = list()
-    pointers_to_possible_keys = list()
-    with open(dump, "r+b") as f:
-        # Memory-map the file, size 0 means whole file
-        mm = mmap.mmap(f.fileno(), 0)
-        for offset in offsets:
-            # Offset points to a structure key_data_s
-            # struct key_data_s -> void* key_bytes;
-            # A pointer to the key is at offset 16 of the structure, but we skipped the first four bytes bc they may be unknown
-            mm.seek(offset + 12)
-            # Read pointer
-            key_data_pointer = mm.read(4)
-            ba = bytearray.fromhex(key_data_pointer.hex())
-            ba.reverse()
-            s = ''.join(format(x, '02x') for x in ba)
-            pointers_to_possible_keys.append(s.upper())
-            mm.seek(offset)
-            print(f"Structure found: {mm.read(16).hex()}")
-        # Close the map
-        mm.close()
-    # Get possible keys
-    minidump_reader = open_minidump(dump)
-    for pointer in pointers_to_possible_keys:
-        possible_keys.append(read_vaddr(reader=minidump_reader, position=int(pointer, 16), count=32))
-
-    return possible_keys, pointers_to_possible_keys
-
-
-def search_pattern(dump, pattern):
-    # Fixed TODO, paths relative to main file
-    subprocess.run([f"python.exe",  # remember to activate venv
-                    f"{script_dir}/searchbin.py", "-p", str(pattern),
-                    os.path.abspath(dump)], stdout=subprocess.PIPE)
-    with open(f"{script_dir}/testing.matches", "r") as f:
-        offsets = json.load(f)
-    return offsets['matches']
-
-
 def decrypt_file(file, key):
     print(f"\tDecrypting file {file} with key {key}")
     with open("key_bytes", 'wb') as f:
@@ -140,19 +70,13 @@ def decrypt_file(file, key):
     return filename
 
 
-def open_minidump(filename):
-    mini = MinidumpFile.parse(filename)
-    reader = mini.get_reader().get_buffered_reader()
-    return reader
-
-
-def read_vaddr(reader, position, count):
-    reader.move(position)
-    data = reader.read(count)
-    return data
-
-
-def decrypt_whole_system(rootdir, key, extension):
+def decrypt_whole_system(rootdir, key, encrypted_file_extension):
+    """
+    This function recursively decrypts the given folder given a key and a file extension known for the encrypted files.
+    @param rootdir: The root directory with the files to be decrypted. Use C:/ to decrypt the whole filesystem
+    @param key: The decryption key that will be used for decrypting the files
+    @param encrypted_file_extension: the extension of the files that were been encrypted, e.g., .avdn
+    """
     print("Decrypting whole system")
     total_files = 0
     total_encrypted_files = 0
@@ -161,7 +85,7 @@ def decrypt_whole_system(rootdir, key, extension):
         for file in files:
             total_files += 1
             file_path = os.path.abspath(os.path.join(subdir, file))
-            if (file_path.endswith(extension)) and "$Recycle.Bin" not in file_path:
+            if (file_path.endswith(encrypted_file_extension)) and "$Recycle.Bin" not in file_path:
                 try:
                     print(f"> Found file {file_path}")
                     total_encrypted_files += 1
@@ -184,49 +108,91 @@ def decrypt_whole_system(rootdir, key, extension):
           f"\nTime: {time.perf_counter() - start_time}")
 
 
-def main():
-    args = p.parse_args()
-    original_file = os.path.abspath(args.original)
-    encrypted_file = os.path.abspath(args.file)
-    filename, file_extension = os.path.splitext(encrypted_file)
-    dump = os.path.abspath(args.dump)
-    pattern = "106600000100000020000000"
+def main(args):
 
-    # Get a list of offsets of the matches with searchbin
-    offsets = search_pattern(dump=dump, pattern=pattern)
-    print(f"Offsets: {offsets}")
-    # Get each possible key from the list of offsets
-    possible_keys, pointers_to_possible_keys = get_keys_from_offsets(dump=dump, offsets=offsets)
-    print(f"Pointers to possible keys: {pointers_to_possible_keys}")
-    print(f"Possible keys: {possible_keys}")
-    # Get original file size and perform initial truncate
-    shutil.copy(encrypted_file, f"{encrypted_file}.backup_copy")
-    data = get_signature_data(encrypted_file)
-    data['encrypted_truncated_file'] = remove_signature(encrypted_file)
-    # Try each key till success
-    success = False
-    i = 0
-    possible_keys = list(dict.fromkeys(possible_keys))
-    while not success and i < len(possible_keys):
-        # Decrypt file
-        decrypted_file = decrypt_file(data['encrypted_truncated_file'], possible_keys[i])
-        # Truncate to original size
-        with open(decrypted_file, "r+b") as f:
-            f.truncate(data["original_size"])
-        # Compare with the original file
-        success = filecmp.cmp(decrypted_file, original_file, shallow=True)
-        if not success:
-            i = i + 1
+    # Read file with potential keys
+    with open(args.keys, 'r') as file:
+        json_data = json.load(file)
 
-    if success:
-        print(f"[SUCCESS] Found the correct symmetric key: {possible_keys[i]}")
-        os.remove(data['encrypted_truncated_file'])
-        decrypt_whole_system(args.folder, possible_keys[i], file_extension)
+    # Search for the AES keys
+    possible_keys = list()
+    for i in json_data:
+        print(i)
+        if json_data[i]["algorithm"] == "AES":
+            possible_keys.append(bytes.fromhex(i))
+
+    if len(possible_keys) == 0:
+        print(" [x] No valid keys were provided")
+        exit(-1)
+    elif len(possible_keys) == 1:
+        print(" [!] Only one key was provided. Directly trying to decrypt")
+        decrypt_whole_system(args.folder, possible_keys[0], args.extension)
     else:
-        shutil.copy(f"{encrypted_file}.backup_copy", encrypted_file)
-        os.remove(f"{encrypted_file}.backup_copy")
-        print("[FAIL] Did not find the correct symmetric key")
+        print(" [!] Found multiple keys. Trying to find which one is valid")
+        if not args.original or not args.file:
+            print(" [x] For this option is necessary to provide a file encrypted by Avaddon and its unencrypted version."
+                  "Please check script arguments for more information")
+            exit(-1)
+
+        original_file = os.path.abspath(args.original)
+        encrypted_file = os.path.abspath(args.file)
+        _, file_extension = os.path.splitext(encrypted_file)
+
+        # Get original file size and perform initial truncate
+        shutil.copy(encrypted_file, f"{encrypted_file}.backup_copy")
+        data = get_signature_data(encrypted_file)
+        data['encrypted_truncated_file'] = remove_signature(encrypted_file)
+        # Try each key till success
+        success = False
+        i = 0
+        possible_keys = list(dict.fromkeys(possible_keys))
+        while not success and i < len(possible_keys):
+            # Decrypt file
+            decrypted_file = decrypt_file(data['encrypted_truncated_file'], possible_keys[i])
+            # Truncate to original size
+            with open(decrypted_file, "r+b") as f:
+                f.truncate(data["original_size"])
+            # Compare with the original file
+            success = filecmp.cmp(decrypted_file, original_file, shallow=True)
+            if not success:
+                i += 1
+
+        if success:
+            print(f"[SUCCESS] Found the correct symmetric key: {possible_keys[i]}")
+            os.remove(data['encrypted_truncated_file'])
+            decrypt_whole_system(args.folder, possible_keys[i], file_extension)
+        else:
+            shutil.copy(f"{encrypted_file}.backup_copy", encrypted_file)
+            os.remove(f"{encrypted_file}.backup_copy")
+            print("[FAIL] Did not find the correct symmetric key")
 
 
 if __name__ == '__main__':
-    main()
+    description = """
+    	Decrypts Avaddon encrypted files in a specific folder. 
+    	The decryption is done recursively, which means that it may decrypt the whole system if the root path is C:\\.
+    	To do this, three files are needed:
+    	    1) a JSON with all keys extracted from Avaddon
+    	    2) a folder with the files to decrypt
+    	    3) if there are multiple possible AES keys, an encrypted file and its unencrypted version
+    	The encrypted file is decrypted with all the valid session keys found in the JSON file.
+    	If decrypting the encrypted file with one of such keys results in a file that is identical to the original one, 
+    	it means that we have recovered the session key.
+    	If that is the case, we proceed to decrypt all the encrypted files in the specified folder.
+    	IMPORTANT: BACKUP YOUR SYSTEM BEFORE LAUNCHING THE DECRYPTOR.
+    	THIS TOOL IS PROVIDED AS A PROOF OF CONCEPT, WITHOUT ANY WARRANTY.
+    	"""
+
+    arg_parser = argparse.ArgumentParser(description=description)
+    arg_parser.add_argument('-f', '--encfile', type=str, metavar='FILE', required=False, dest='file',
+                            help='Encrypted file')
+    arg_parser.add_argument('-o', '--original', type=str, metavar='FILE', required=False, dest='original',
+                            help='Original version of the encrypted file file')
+    arg_parser.add_argument('-k', '--keys', type=str, required=True, help="JSON file with the keys",
+                            default="keys.json")
+    arg_parser.add_argument('-e', '--extension', type=str, required=False, default=".avdn",
+                            help="File extension of the encrypted files. Defaults to '.avdn'. If --encfile option is "
+                                 "present, it will be grabbed from the specified file, and this option will be ignored")
+    arg_parser.add_argument('--folder', type=str, dest='folder', required=False, help='Folder to decrypt recursively', default="C:/")
+
+    main(args=arg_parser.parse_args())
